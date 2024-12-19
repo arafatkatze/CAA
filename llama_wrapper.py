@@ -124,8 +124,13 @@ class LlamaWrapper:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name_path, token=hf_token
         )
+        # Load model with single GPU configuration
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name_path, token=hf_token
+            self.model_name_path,
+            token=hf_token,
+            torch_dtype=t.float16,
+            low_cpu_mem_usage=True,
+            device_map={"": self.device}  # Force everything to GPU 0
         )
         if override_model_weights_path is not None:
             self.model.load_state_dict(t.load(override_model_weights_path))
@@ -282,3 +287,4 @@ class LlamaWrapper:
         probs_percent = [int(v * 100) for v in values.tolist()]
         tokens = self.tokenizer.batch_decode(indices.unsqueeze(-1))
         return list(zip(tokens, probs_percent)), list(zip(tokens, values.tolist()))
+

@@ -74,6 +74,7 @@ def generate_save_vectors_for_behavior(
     model: LlamaWrapper,
 ):
     data_path = get_ab_data_path(behavior)
+    import pdb; pdb.set_trace()
     if not os.path.exists(get_vector_dir(behavior)):
         os.makedirs(get_vector_dir(behavior))
     if save_activations and not os.path.exists(get_activations_dir(behavior)):

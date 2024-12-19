@@ -135,6 +135,7 @@ def test_steering(
         if settings.override_vector is not None:
             vector = get_steering_vector(settings.behavior, settings.override_vector, name_path, normalized=True)
         else:
+            print(f"Getting vector for behavior {settings.behavior}, layer {layer}, model {name_path}")
             vector = get_steering_vector(settings.behavior, layer, name_path, normalized=True)
         if settings.model_size != "7b":
             vector = vector.half()
