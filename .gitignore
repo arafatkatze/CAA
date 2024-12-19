@@ -12,3 +12,7 @@ logs
 .DS_Store
 .hypothesis
 */.DS_Store
+gpu_machine
+.python-version
+sync*
+reader
