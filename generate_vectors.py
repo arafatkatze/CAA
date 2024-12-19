@@ -74,7 +74,7 @@ def generate_save_vectors_for_behavior(
     model: LlamaWrapper,
 ):
     data_path = get_ab_data_path(behavior)
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     if not os.path.exists(get_vector_dir(behavior)):
         os.makedirs(get_vector_dir(behavior))
     if save_activations and not os.path.exists(get_activations_dir(behavior)):
@@ -145,9 +145,11 @@ def generate_save_vectors(
         HUGGINGFACE_TOKEN, size=model_size, use_chat=not use_base_model
     )
     for behavior in behaviors:
-        generate_save_vectors_for_behavior(
-            layers, save_activations, behavior, model
-        )
+        import pdb; pdb.set_trace() 
+        if behavior == "sycophancy":
+            generate_save_vectors_for_behavior(
+                layers, save_activations, behavior, model
+            )
 
 
 if __name__ == "__main__":

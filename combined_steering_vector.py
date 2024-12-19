@@ -34,7 +34,7 @@ def main():
     weights = [1.0, 1.0]  # Equal weights to start
     
     # Create directory for combined vectors if it doesn't exist
-    combined_name = f"combined_{'-'.join(behaviors)}"
+    combined_name = f"combined_{'_'.join(behaviors)}"
     combined_dir = os.path.join("vectors", combined_name)
     os.makedirs(combined_dir, exist_ok=True)
     
