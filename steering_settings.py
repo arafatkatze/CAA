@@ -41,11 +41,12 @@ class SteeringSettings:
         directory: str,
         layer: Optional[int] = None,
         multiplier: Optional[int] = None,
+        behavior: Optional[str] = None,
     ):
         elements = {
             "layer": str(layer)+"_",
             "multiplier": str(float(multiplier))+"_",
-            "behavior": self.behavior,
+            "behavior": behavior or self.behavior,
             "type": self.type,
             "system_prompt": self.system_prompt,
             "override_vector": self.override_vector,
@@ -60,6 +61,8 @@ class SteeringSettings:
 
         matching_files = []
 
+        print(f"Filtered elements for me are: {filtered_elements}")
+        print(f"Remove elements for me are: {remove_elements}")
         for filename in os.listdir(directory):
             if all(f"{k}={str(v).replace('/', '-')}" in filename for k, v in filtered_elements.items()):
                 # ensure remove_elements are *not* present

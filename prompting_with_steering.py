@@ -23,8 +23,10 @@ from behaviors import (
     get_mmlu_data,
     get_ab_test_data,
     ALL_BEHAVIORS,
+    SYCOPHANCY,
     get_results_dir,
 )
+import torch
 
 load_dotenv()
 
@@ -95,15 +97,57 @@ def process_item_tqa_mmlu(
     }
 
 
+def get_combined_vector(
+    behaviors: List[str],
+    weights: List[float],
+    layer: int,
+    model_name_path: str,
+    normalized: bool = True,
+) -> torch.Tensor:
+    """Combine multiple steering vectors using weighted sum."""
+    vectors = []
+    for behavior in behaviors:
+        vector = get_steering_vector(behavior, layer, model_name_path, normalized=normalized)
+        vectors.append(vector)
+    
+    combined_vector = sum(w * v for w, v in zip(weights, vectors))
+    if normalized:
+        combined_vector = combined_vector / combined_vector.norm()
+    return combined_vector
+
+
+def combine_test_data(behaviors: List[str], data_getter_func) -> List[Dict]:
+    """Combine test data from multiple behaviors into a single dataset."""
+    combined_data = []
+    for behavior in behaviors:
+        behavior_data = data_getter_func(behavior)
+        combined_data.extend(behavior_data)
+    return combined_data
+
 def test_steering(
-    layers: List[int], multipliers: List[int], settings: SteeringSettings, overwrite=False
+    layers: List[int],
+    multipliers: List[float],
+    settings: SteeringSettings,
+    weights: Optional[List[float]] = None,
+    overwrite=False,
 ):
     """
-    layers: List of layers to test steering on.
-    multipliers: List of multipliers to test steering with.
-    settings: SteeringSettings object.
+    Modified to handle both single and multiple behaviors.
     """
-    save_results_dir = get_results_dir(settings.behavior)
+    behaviors = settings.behavior if isinstance(settings.behavior, list) else [settings.behavior]
+    if weights is None:
+        weights = [1.0 / len(behaviors)] * len(behaviors)
+    # Create combined behavior string for both directory and filename
+    if len(behaviors) > 1:
+        behavior_str = "_combined_" + "_".join(behaviors)
+        weights_str = "_w" + "_".join(f"{w:.2f}" for w in weights)
+        save_results_dir = get_results_dir(behavior_str + weights_str)
+        # Override the behavior in settings for filename generation
+        settings.behavior = behavior_str
+    else:
+        save_results_dir = get_results_dir(behaviors[0])
+        settings.behavior = behaviors[0]
+
     if not os.path.exists(save_results_dir):
         os.makedirs(save_results_dir)
     process_methods = {
@@ -112,12 +156,21 @@ def test_steering(
         "truthful_qa": process_item_tqa_mmlu,
         "mmlu": process_item_tqa_mmlu,
     }
-    test_datasets = {
-        "ab": get_ab_test_data(settings.behavior),
-        "open_ended": get_open_ended_test_data(settings.behavior),
-        "truthful_qa": get_truthful_qa_data(),
-        "mmlu": get_mmlu_data(),
-    }
+    # Modified test dataset loading
+    if settings.type in ["truthful_qa", "mmlu"]:
+        test_datasets = {
+            "truthful_qa": get_truthful_qa_data(),
+            "mmlu": get_mmlu_data(),
+        }
+        test_data = test_datasets[settings.type]
+    else:
+        # For ab and open_ended, combine data from all behaviors
+        data_getters = {
+            "ab": get_ab_test_data,
+            "open_ended": get_open_ended_test_data,
+        }
+        test_data = combine_test_data(behaviors, data_getters[settings.type])
+
     model = LlamaWrapper(
         HUGGINGFACE_TOKEN,
         size=settings.model_size,
@@ -127,15 +180,21 @@ def test_steering(
     a_token_id = model.tokenizer.convert_tokens_to_ids("A")
     b_token_id = model.tokenizer.convert_tokens_to_ids("B")
     model.set_save_internal_decodings(False)
-    test_data = test_datasets[settings.type]
     for layer in layers:
         name_path = model.model_name_path
         if settings.override_vector_model is not None:
             name_path = settings.override_vector_model
+            
         if settings.override_vector is not None:
-            vector = get_steering_vector(settings.behavior, settings.override_vector, name_path, normalized=True)
+            vector = get_steering_vector(behaviors[0], settings.override_vector, name_path, normalized=True)
         else:
-            vector = get_steering_vector(settings.behavior, layer, name_path, normalized=True)
+            if len(behaviors) > 1:
+                print(f"Getting combined vector for behaviors {behaviors} with weights {weights}, layer {layer}")
+                vector = get_combined_vector(behaviors, weights, layer, name_path)
+            else:
+                print(f"Getting vector for behavior {behaviors[0]}, layer {layer}")
+                vector = get_steering_vector(behaviors[0], layer, name_path, normalized=True)
+
         if settings.model_size != "7b":
             vector = vector.half()
         vector = vector.to(model.device)
@@ -179,7 +238,8 @@ if __name__ == "__main__":
         "--behaviors",
         type=str,
         nargs="+",
-        default=ALL_BEHAVIORS
+        default=[SYCOPHANCY],
+        help="Behaviors to combine. Multiple behaviors will be combined using weights.",
     )
     parser.add_argument(
         "--type",
@@ -194,8 +254,18 @@ if __name__ == "__main__":
     parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
     parser.add_argument("--override_model_weights_path", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true", default=False)
+    parser.add_argument(
+        "--weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Weights for combining behaviors. Must match number of behaviors if provided.",
+    )
     
     args = parser.parse_args()
+
+    if args.weights and len(args.weights) != len(args.behaviors):
+        raise ValueError("Number of weights must match number of behaviors")
 
     steering_settings = SteeringSettings()
     steering_settings.type = args.type
@@ -206,11 +276,13 @@ if __name__ == "__main__":
     steering_settings.model_size = args.model_size
     steering_settings.override_model_weights_path = args.override_model_weights_path
 
-    for behavior in args.behaviors:
-        steering_settings.behavior = behavior
-        test_steering(
-            layers=args.layers,
-            multipliers=args.multipliers,
-            settings=steering_settings,
-            overwrite=args.overwrite,
-        )
+    # Store behaviors as list in settings
+    steering_settings.behavior = args.behaviors
+
+    test_steering(
+        layers=args.layers,
+        multipliers=args.multipliers,
+        settings=steering_settings,
+        weights=args.weights,
+        overwrite=args.overwrite,
+    )

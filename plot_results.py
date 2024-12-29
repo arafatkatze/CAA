@@ -7,7 +7,7 @@ python plot_results.py --layers $(seq 0 31) --multipliers -1 0 1 --type ab
 
 import matplotlib.pyplot as plt
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import os
 from collections import defaultdict
 import matplotlib.cm as cm
@@ -489,6 +489,125 @@ def steering_settings_from_args(args, behavior: str) -> SteeringSettings:
         steering_settings.override_model_weights_path = args.override_weights[0]
     return steering_settings
 
+def get_combined_data(
+    layer: int,
+    multiplier: int,
+    settings: SteeringSettings,
+    behaviors: List[str],
+    weights: Optional[List[float]] = None,
+) -> Dict[str, Any]:
+    """
+    Get data for combined behaviors, matching prompting_with_steering.py path structure.
+    """
+    if weights is None:
+        weights = [1.0 / len(behaviors)] * len(behaviors)
+
+    behavior_str = "_combined_" + "_".join(behaviors)
+    weights_str = "_w" + "_".join(f"{w:.2f}" for w in weights)
+    directory = get_results_dir(behavior_str + weights_str)
+
+    print(f"Directory for me is: {directory}")
+    if settings.type == "open_ended":
+        directory = directory.replace("results", os.path.join("results", "open_ended_scores"))
+    filenames = settings.filter_result_files_by_suffix(
+        directory, layer=layer, multiplier=multiplier, behavior=behavior_str
+    )
+    print(f"Filenames for me are: {filenames}")
+
+    if len(filenames) > 1:
+        print(f"[WARN] >1 filename found for filter {settings}", filenames)
+    if len(filenames) == 0:
+        print(f"[WARN] no filenames found for filter {settings}")
+        return []
+
+    with open(filenames[0], "r") as f:
+        return json.load(f)
+
+def plot_combined_ab_results_for_layer(
+    layer: int,
+    multipliers: List[float],
+    settings: SteeringSettings,
+    behaviors: List[str],
+    weights: Optional[List[float]] = None,
+) -> None:
+    """
+    Plot A/B test results comparing individual behaviors with their combination.
+    """
+    if weights is None:
+        weights = [1.0 / len(behaviors)] * len(behaviors)
+
+    behavior_str = "_combined_" + "_".join(behaviors)
+    weights_str = "_w" + "_".join(f"{w:.2f}" for w in weights)
+    save_to = os.path.join(
+        ANALYSIS_PATH,
+        f"combined_behaviors_layer_{layer}_{behavior_str}{weights_str}.png"
+    )
+
+    plt.figure(figsize=(4, 4))
+    all_results = {}
+   # Plot individual behaviors first
+    for behavior in behaviors:
+        settings.behavior = behavior
+        results = []
+        for multiplier in multipliers:
+            data = get_data(layer, multiplier, settings)
+            if not data:  # Handle missing data
+                print(f"Warning: No data for {behavior} at multiplier {multiplier}")
+                continue
+            avg_prob = get_avg_key_prob(data, "answer_matching_behavior")
+            results.append((multiplier, avg_prob))
+            
+        if results:  # Only plot if we have results
+            results.sort(key=lambda x: x[0])  # Sort by multiplier
+            all_results[behavior] = results
+            plt.plot(
+                [x[0] for x in results],
+                [x[1] for x in results],
+                label=f"Individual {HUMAN_NAMES[behavior]}",
+                linestyle="--",
+                marker="o",
+                markersize=6,
+                alpha=0.7
+            )
+    print(f"All results for me of the individual behaviors are: {all_results}")
+    # Plot combined behavior using get_combined_data
+    combined_results = []
+    for multiplier in multipliers:
+        data = get_combined_data(layer, multiplier, settings, behaviors, weights)
+        if not data:
+            print(f"Warning: No data for combined behavior at multiplier {multiplier}")
+            continue
+        avg_prob = get_avg_key_prob(data, "answer_matching_behavior")
+        combined_results.append((multiplier, avg_prob))
+    print(f"Combined results for me are: {combined_results}")
+    if combined_results:
+        combined_results.sort(key=lambda x: x[0])
+        all_results["combined"] = combined_results
+        plt.plot(
+            [x[0] for x in combined_results],
+            [x[1] for x in combined_results],
+            label="Combined behaviors",
+            linestyle="solid",
+            linewidth=3,
+            marker="o",
+            markersize=8,
+            color="red"
+        )
+    
+    plt.xlabel("Multiplier")
+    plt.ylabel("p(answer matching behavior)")
+    plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0%}"))
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.title(f"Combined Behavior Effect (Layer {layer})", fontsize=11)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    plt.savefig(save_to, bbox_inches='tight', dpi=300)
+    plt.close()
+    
+    with open(save_to.replace(".png", ".txt"), "w") as f:
+        json.dump(all_results, f, indent=4)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--layers", nargs="+", type=int, required=True)
@@ -511,33 +630,59 @@ if __name__ == "__main__":
     parser.add_argument("--use_base_model", action="store_true", default=False)
     parser.add_argument("--model_size", type=str, choices=["7b", "13b"], default="7b")
     parser.add_argument("--override_weights", type=str, nargs="+", default=[])
+    parser.add_argument(
+        "--combined_behaviors",
+        nargs="+",
+        type=str,
+        help="List of behaviors to combine (e.g., sycophancy hallucination)",
+        default=None
+    )
+    parser.add_argument(
+        "--weights",
+        type=float,
+        nargs="+",
+        help="Weights for combining behaviors. Must match number of behaviors if provided.",
+        default=None
+    )
     
     args = parser.parse_args()
 
     steering_settings = steering_settings_from_args(args, args.behaviors[0])
 
-    if len(args.override_weights) > 0:
-        plot_finetuning_openended_comparison(steering_settings, args.override_weights[0], args.override_weights[1], args.multipliers, args.layers[0])
-        exit(0)
+    if args.combined_behaviors:
+        # Plot combined behavior results
+        if args.weights and len(args.weights) != len(args.combined_behaviors):
+            raise ValueError("Number of weights must match number of behaviors")
+        plot_combined_ab_results_for_layer(
+            args.layers[0],
+            args.multipliers,
+            steering_settings,
+            args.combined_behaviors,
+            args.weights
+        )
+    else:
+        if len(args.override_weights) > 0:
+            plot_finetuning_openended_comparison(steering_settings, args.override_weights[0], args.override_weights[1], args.multipliers, args.layers[0])
+            exit(0)
 
-    if steering_settings.type == "ab":
-        plot_layer_sweeps(args.layers, args.behaviors, steering_settings, args.title)
-
-    if len(args.layers) == 1 and steering_settings.type != "truthful_qa":
-        plot_effect_on_behaviors(args.layers[0], args.multipliers, args.behaviors, steering_settings, args.title)
-
-    for behavior in args.behaviors:
-        steering_settings = steering_settings_from_args(args, behavior)
         if steering_settings.type == "ab":
-            if len(args.layers) > 1 and 1 in args.multipliers and -1 in args.multipliers:
-                plot_ab_data_per_layer(
-                    args.layers, [1, -1], steering_settings
-                )
-            if len(args.layers) == 1:
-                plot_ab_results_for_layer(args.layers[0], args.multipliers, steering_settings)
-        elif steering_settings.type == "open_ended":
-            for layer in args.layers:
-                plot_open_ended_results(layer, args.multipliers, steering_settings)
-        elif steering_settings.type == "truthful_qa" or steering_settings.type == "mmlu":
-            for layer in args.layers:
-                plot_tqa_mmlu_results_for_layer(layer, args.multipliers, steering_settings)
+            plot_layer_sweeps(args.layers, args.behaviors, steering_settings, args.title)
+
+        if len(args.layers) == 1 and steering_settings.type != "truthful_qa":
+            plot_effect_on_behaviors(args.layers[0], args.multipliers, args.behaviors, steering_settings, args.title)
+
+        for behavior in args.behaviors:
+            steering_settings = steering_settings_from_args(args, behavior)
+            if steering_settings.type == "ab":
+                if len(args.layers) > 1 and 1 in args.multipliers and -1 in args.multipliers:
+                    plot_ab_data_per_layer(
+                        args.layers, [1, -1], steering_settings
+                    )
+                if len(args.layers) == 1:
+                    plot_ab_results_for_layer(args.layers[0], args.multipliers, steering_settings)
+            elif steering_settings.type == "open_ended":
+                for layer in args.layers:
+                    plot_open_ended_results(layer, args.multipliers, steering_settings)
+            elif steering_settings.type == "truthful_qa" or steering_settings.type == "mmlu":
+                for layer in args.layers:
+                    plot_tqa_mmlu_results_for_layer(layer, args.multipliers, steering_settings)
